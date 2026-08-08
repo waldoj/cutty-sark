@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clipper</title>
+<style>
+  :root {
+    --bg: #0e1013;
+    --panel: #171a1f;
+    --panel-2: #1e222a;
+    --line: #2b313c;
+    --text: #e6e9ef;
+    --dim: #8a93a3;
+    --accent: #5aa9e6;
+    --in: #4ade80;
+    --out: #fb923c;
+    --danger: #f87171;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    grid-template-rows: 100vh;
+    overflow: hidden;
+  }
+
+  /* ---- left: video + controls ---- */
+
+  #stage {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 14px;
+    gap: 12px;
+  }
+
+  #videoWrap {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  /* Fill the stage without cropping: object-fit keeps the aspect ratio while
+     letting the element take all available height, which max-height alone
+     doesn't do for a flex child. */
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    outline: none;
+    background: #000;
+  }
+  video:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+
+  /* Cues default to the very bottom of the element box, which on a letterboxed
+     video is the black bar — where they get clipped. Lift them onto the frame
+     and tone down the default heavy shadow. */
+  video::cue {
+    background: rgba(0, 0, 0, .72);
+    color: #fff;
+    font-size: .8em;
+    line-height: 1.35;
+    text-shadow: none;
+  }
+  video::-webkit-media-text-track-container { transform: translateY(-3%); }
+
+  #controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  /* ---- timeline ---- */
+
+  #timeline {
+    position: relative;
+    padding-top: 8px;
+  }
+
+  /* Coverage bands live in their own layer, positioned over the slider's track
+     but under its thumb. The slider's internals aren't scriptable, so the marks
+     are siblings drawn at matching coordinates rather than children of it. */
+  #coverage {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 16px;          /* 8px #timeline padding + the track's 8px offset inside
+                           the 22px-tall slider — i.e. exactly on the track. */
+    height: 6px;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .band {
+    position: absolute;
+    top: 0;
+    height: 6px;
+    background: var(--accent);
+    opacity: .55;
+    border-radius: 1px;
+  }
+
+  /* Doubly-covered ranges: warmer and opaque, so accidental double-marking of
+     the same moment is obvious rather than hidden under a uniform fill. */
+  .band.overlap {
+    background: #f0b429;
+    opacity: .95;
+    z-index: 2;
+  }
+
+  #scrub {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 22px;
+    background: transparent;
+    margin: 0;
+    cursor: pointer;
+    display: block;
+    position: relative;
+    z-index: 3;   /* thumb stays visible above the coverage bands */
+  }
+
+  /* The track itself is transparent (see the pseudo-element rules below) so it
+     can't paint over the bands; its groove is drawn as a sibling instead. */
+  #groove {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 16px;
+    height: 6px;
+    background: var(--panel-2);
+    border-radius: 3px;
+    pointer-events: none;
+  }
+
+  #scrub::-webkit-slider-runnable-track {
+    height: 6px;
+    background: transparent;
+    border-radius: 3px;
+  }
+
+  #scrub::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -4px;
+    border-radius: 50%;
+    background: var(--text);
+    border: none;
+  }
+
+  #scrub::-moz-range-track {
+    height: 6px;
+    background: transparent;
+    border-radius: 3px;
+  }
+
+  #scrub::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: none;
+    border-radius: 50%;
+    background: var(--text);
+  }
+
+  /* pending in/out span, drawn over the track */
+  #span {
+    position: absolute;
+    top: 16px;
+    height: 6px;
+    background: rgba(90, 169, 230, .35);
+    border-left: 2px solid var(--in);
+    border-right: 2px solid var(--out);
+    pointer-events: none;
+    display: none;
+    z-index: 2;   /* the clip being marked reads above already-saved coverage */
+  }
+
+  #readout {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    font-family: var(--mono);
+  }
+
+  #time { font-size: 26px; letter-spacing: -.5px; }
+  #duration { color: var(--dim); font-size: 13px; }
+  #rateLabel { margin-left: auto; color: var(--dim); font-size: 12px; }
+
+  /* ---- buttons ---- */
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  button {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  button:hover:not(:disabled) { background: #262b34; border-color: #3a4250; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .38; cursor: default; }
+
+  button.nudge { font-family: var(--mono); font-size: 12px; min-width: 46px; }
+  button.wide { padding: 6px 14px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #05121d; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: #6fb6ea; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+
+  .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  .spacer { flex: 1; }
+  kbd {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--dim);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    padding: 0 3px;
+    margin-left: 5px;
+  }
+
+  /* ---- mark row ---- */
+
+  #markRow {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px;
+  }
+
+  .mark {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 128px;
+  }
+
+  .mark .val {
+    font-family: var(--mono);
+    font-size: 15px;
+    color: var(--dim);
+  }
+  .mark.set .val { color: var(--text); }
+  .mark .val.inVal.filled { color: var(--in); }
+  .mark .val.outVal.filled { color: var(--out); }
+
+  #label {
+    flex: 1;
+    min-width: 0;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  #label:focus { outline: none; border-color: var(--accent); }
+  #label::placeholder { color: #5b6472; }
+
+  #saveCol { min-width: 132px; }
+  #saveCol button { display: flex; align-items: center; justify-content: center; gap: 2px; }
+  #saveCol kbd { margin-left: 2px; }
+
+  /* ---- right: clip list ---- */
+
+  #side {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+  }
+
+  #sideHead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  #sideHead h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  #count { color: var(--dim); font-size: 12px; }
+
+  #status {
+    margin-left: auto;
+    font-size: 11px;
+    font-family: var(--mono);
+    color: var(--in);
+    opacity: 0;
+    transition: opacity .25s;
+  }
+  #status.show { opacity: 1; }
+  #status.err { color: var(--danger); opacity: 1; }
+
+  #list { flex: 1; overflow-y: auto; }
+
+  .clip {
+    display: grid;
+    grid-template-columns: 30px 1fr auto;
+    gap: 4px 8px;
+    padding: 9px 12px;
+    border-bottom: 1px solid #21262e;
+    align-items: center;
+  }
+  .clip:hover { background: var(--panel-2); }
+
+  .clip .idx { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .clip .times { font-family: var(--mono); font-size: 12px; }
+  .clip .dur { color: var(--dim); }
+  .clip .lab {
+    grid-column: 2 / 4;
+    font-size: 12px;
+    color: var(--dim);
+    overflow-wrap: anywhere;
+  }
+  .clip .lab:empty { display: none; }
+  .clip .acts { display: flex; gap: 3px; }
+  .clip button {
+    padding: 3px 6px;
+    font-size: 11px;
+    background: transparent;
+  }
+  .clip button.del:hover { color: var(--danger); border-color: var(--danger); }
+  .clip.playing { background: #1b2530; box-shadow: inset 2px 0 0 var(--accent); }
+
+  #empty { padding: 24px 14px; color: var(--dim); font-size: 12px; text-align: center; }
+
+  #footer {
+    padding: 8px 14px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 10px;
+    color: #616b7b;
+    overflow-wrap: anywhere;
+  }
+
+  /* Inherit everything at rest, so the filenames look exactly as they did
+     before they became links. The affordance appears only on hover/focus. */
+  #footer a {
+    color: inherit;
+    text-decoration: none;
+  }
+  #footer a:hover,
+  #footer a:focus-visible {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  #footer a:focus-visible { outline: none; }
+
+  /* The CSV doesn't exist until the first clip is saved. Until then its name
+     shouldn't advertise a click that can only fail. */
+  #footer a.missing { cursor: default; }
+  #footer a.missing:hover { color: inherit; text-decoration: none; }
+
+  #banner {
+    display: none;
+    padding: 10px 14px;
+    background: #3a1d1d;
+    border-bottom: 1px solid #6b2d2d;
+    color: #ffc9c9;
+    font-size: 12px;
+  }
+  #banner code {
+    display: block;
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: #ffe3e3;
+    overflow-wrap: anywhere;
+  }
+
+  /* Keyboard help, folded away at the bottom of the sidebar. */
+  details#help { border-top: 1px solid var(--line); }
+  details#help summary {
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--dim);
+    user-select: none;
+  }
+  details#help table { width: 100%; border-collapse: collapse; margin: 0 0 8px; }
+  details#help td { padding: 2px 14px; font-size: 11px; color: var(--dim); }
+  details#help td:first-child { font-family: var(--mono); color: var(--text); width: 88px; }
+</style>
+</head>
+<body>
+
+<main id="stage">
+  <div id="videoWrap">
+    <!-- tabindex makes the video focusable, so blurring the label field can hand
+         focus somewhere that isn't a text input. Without it, focus() is a no-op
+         and the single-letter bindings keep typing instead of marking. -->
+    <video id="video" src="/video" preload="metadata" tabindex="0"></video>
+    <!-- The <track> is added at runtime, only when the server reports a caption
+         file. An empty src would make the browser log a failed fetch. -->
+  </div>
+
+  <div id="controls">
+    <div id="timeline">
+      <div id="groove"></div>
+      <div id="coverage"></div>
+      <div id="span"></div>
+      <input id="scrub" type="range" min="0" max="0" step="0.001" value="0" aria-label="Seek">
+    </div>
+
+    <div id="readout">
+      <span id="time">0:00:00.000</span>
+      <span id="duration">/ 0:00:00</span>
+      <span id="rateLabel">1×</span>
+    </div>
+
+    <div class="row">
+      <button class="nudge" data-nudge="-30">−30s</button>
+      <button class="nudge" data-nudge="-5">−5s</button>
+      <button class="nudge" data-nudge="-1">−1s</button>
+      <button class="nudge" data-nudge="-0.5">−.5</button>
+      <button class="nudge" data-nudge="-0.1">−.1</button>
+      <button id="playBtn" class="wide">Play <kbd>space</kbd></button>
+      <button class="nudge" data-nudge="0.1">+.1</button>
+      <button class="nudge" data-nudge="0.5">+.5</button>
+      <button class="nudge" data-nudge="1">+1s</button>
+      <button class="nudge" data-nudge="5">+5s</button>
+      <button class="nudge" data-nudge="30">+30s</button>
+      <div class="sep"></div>
+      <button class="rate" data-rate="0.5">0.5×</button>
+      <button class="rate on" data-rate="1">1×</button>
+      <button class="rate" data-rate="2">2×</button>
+      <div class="sep" id="ccSep" hidden></div>
+      <button id="ccBtn" hidden>CC <kbd>C</kbd></button>
+    </div>
+
+    <div id="markRow">
+      <div class="mark" id="inMark">
+        <button id="setIn">Set In <kbd>I</kbd></button>
+        <span class="val inVal" id="inVal">—</span>
+      </div>
+      <div class="mark" id="outMark">
+        <button id="setOut">Set Out <kbd>O</kbd></button>
+        <span class="val outVal" id="outVal">—</span>
+      </div>
+      <div class="mark" style="min-width:96px">
+        <button id="reviewBtn" disabled>Review <kbd>Z</kbd></button>
+        <span class="val" id="pendingDur">—</span>
+      </div>
+      <input id="label" type="text" placeholder="Label (optional)" aria-label="Clip label"
+             autocomplete="off" spellcheck="false">
+      <div class="mark" id="saveCol">
+        <button id="saveBtn" class="primary" disabled>Save Clip <kbd>⏎</kbd></button>
+        <button id="clearBtn">Clear <kbd>esc</kbd></button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<aside id="side">
+  <div id="banner"></div>
+  <div id="sideHead">
+    <h1>Clips</h1>
+    <span id="count">0</span>
+    <span id="status"></span>
+  </div>
+  <div id="list"></div>
+  <div id="empty">No clips yet. Set an in point with <b>I</b>, an out point with <b>O</b>, then <b>Enter</b>.</div>
+  <details id="help">
+    <summary>Keyboard shortcuts</summary>
+    <table>
+      <tr><td>space</td><td>Play / pause</td></tr>
+      <tr><td>← →</td><td>Nudge 1s</td></tr>
+      <tr><td>⇧ ← →</td><td>Nudge 0.1s</td></tr>
+      <tr><td>, .</td><td>Nudge 1s</td></tr>
+      <tr><td>J L</td><td>Nudge 5s</td></tr>
+      <tr><td>I / O</td><td>Set in / out point</td></tr>
+      <tr><td>Z</td><td>Seek to pending in point</td></tr>
+      <tr><td>C</td><td>Toggle captions</td></tr>
+      <tr><td>Enter</td><td>Save clip</td></tr>
+      <tr><td>Tab</td><td>Focus label field</td></tr>
+      <tr><td>Esc</td><td>Clear pending marks</td></tr>
+    </table>
+  </details>
+  <div id="footer"></div>
+</aside>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const video = $("video");
+const scrub = $("scrub");
+const label = $("label");
+
+const PENDING_KEY = "clipper:pending";
+
+let clips = [];
+let pendingIn = null;
+let pendingOut = null;
+let saving = false;        // guards against double-save from a held Enter
+let playUntil = null;      // set while previewing a single clip
+let playingIndex = null;
+
+/* ---------- formatting ---------- */
+
+function fmt(t, ms = true) {
+  if (!isFinite(t) || t < 0) t = 0;
+  // Round to whole milliseconds *first*. Flooring instead would render 9876.543
+  // as 2:44:36.542, because (0.543 * 1000) is 542.9999… in binary float — and a
+  // readout that disagrees with the saved value is worse than useless here.
+  const total = Math.round(t * 1000);
+  const msPart = total % 1000;
+  const whole = (total - msPart) / 1000;
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const s = whole % 60;
+  const base = `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  if (!ms) return base;
+  return `${base}.${String(msPart).padStart(3, "0")}`;
+}
+
+const fmtDur = (d) => `${d.toFixed(3)}s`;
+
+/* ---------- status line ---------- */
+
+let statusTimer = null;
+
+function status(msg, isError = false) {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = isError ? "err" : "show";
+  clearTimeout(statusTimer);
+  if (!isError) {
+    statusTimer = setTimeout(() => { el.className = ""; }, 1600);
+  }
+}
+
+/* ---------- transport ---------- */
+
+function seek(t) {
+  const d = video.duration || 0;
+  video.currentTime = Math.min(Math.max(t, 0), d ? d - 0.001 : 0);
+  paint();
+}
+
+// Nudging sets currentTime directly rather than playing — precise and instant
+// on a seekable, range-served file.
+function nudge(delta) {
+  cancelPreview();
+  seek(video.currentTime + delta);
+}
+
+function togglePlay() {
+  cancelPreview();
+  if (video.paused) video.play().catch(() => {}); else video.pause();
+}
+
+function setRate(rate) {
+  video.playbackRate = rate;
+  $("rateLabel").textContent = `${rate}×`;
+  document.querySelectorAll("button.rate").forEach((b) => {
+    b.classList.toggle("on", Number(b.dataset.rate) === rate);
+  });
+}
+
+function cancelPreview() {
+  playUntil = null;
+  if (playingIndex !== null) {
+    playingIndex = null;
+    renderList();
+  }
+}
+
+// Review the pending clip: play from the in point and stop at the out point,
+// the same bounded preview the saved-clip ▶ button gives. With only an in point
+// set there's no end to stop at, so just seek there and let it run.
+function reviewPending() {
+  if (pendingIn === null) return;
+  cancelPreview();
+  video.currentTime = pendingIn;
+  if (pendingOut !== null && pendingOut > pendingIn) playUntil = pendingOut;
+  video.play().catch(() => {});
+  paint();
+}
+
+/* ---------- painting current position ---------- */
+
+function paint() {
+  const t = video.currentTime;
+  $("time").textContent = fmt(t);
+  if (document.activeElement !== scrub) scrub.value = String(t);
+  paintSpan();
+}
+
+// A range input's thumb *centre* travels from THUMB/2 to width - THUMB/2, not
+// from 0 to width. Mapping time onto the raw width would drift the bands up to
+// half a thumb away from the playhead they're supposed to line up with.
+const THUMB = 14;
+
+function timeToX(t, duration) {
+  const track = scrub.getBoundingClientRect();
+  const parent = $("timeline").getBoundingClientRect();
+  const usable = Math.max(1, track.width - THUMB);
+  return (track.left - parent.left) + THUMB / 2 + (t / duration) * usable;
+}
+
+function paintSpan() {
+  const el = $("span");
+  const d = video.duration;
+  if (!d || pendingIn === null || pendingOut === null || pendingOut <= pendingIn) {
+    el.style.display = "none";
+    return;
+  }
+  const x1 = timeToX(pendingIn, d);
+  const x2 = timeToX(pendingOut, d);
+  el.style.display = "block";
+  el.style.left = `${x1}px`;
+  el.style.width = `${Math.max(2, x2 - x1)}px`;
+}
+
+// Minimum rendered width. A 9-second clip in a 3-hour video is ~0.1% of the
+// bar — under one pixel — so exact-scale drawing would make it invisible.
+const MIN_BAND = 3;
+const MIN_OVERLAP = 5;
+
+/* Split the clip list into runs of distinct coverage depth.
+ *
+ * Sweeping the sorted boundaries is what makes overlaps correct: pairwise
+ * comparison would double-draw regions covered by three or more clips, and
+ * couldn't tell "2 clips overlap here" from "5 do". Returns disjoint
+ * [start, end, depth] segments, so nothing is painted twice.
+ */
+function coverageSegments(list) {
+  const edges = [...new Set(list.flatMap((c) => [c.start, c.end]))].sort((a, b) => a - b);
+  const segments = [];
+  for (let i = 0; i < edges.length - 1; i++) {
+    const from = edges[i];
+    const to = edges[i + 1];
+    if (to <= from) continue;
+    const mid = (from + to) / 2;
+    const depth = list.reduce((n, c) => n + (c.start <= mid && mid < c.end ? 1 : 0), 0);
+    if (!depth) continue;
+    // Merge with the previous run when depth matches and they touch.
+    const prev = segments[segments.length - 1];
+    if (prev && prev.depth === depth && Math.abs(prev.end - from) < 1e-9) prev.end = to;
+    else segments.push({ start: from, end: to, depth });
+  }
+  return segments;
+}
+
+function renderCoverage() {
+  const d = video.duration;
+  const box = $("coverage");
+  if (!d || !clips.length) { box.innerHTML = ""; return; }
+
+  const origin = timeToX(0, d);
+  const limit = timeToX(d, d);
+  box.innerHTML = coverageSegments(clips)
+    .map((seg) => {
+      const overlap = seg.depth > 1;
+      const x1 = timeToX(seg.start, d);
+      const x2 = timeToX(seg.end, d);
+      // Overlaps get a wider floor: a hairline warning is a missed warning, and
+      // flagging accidental double-marking is the whole point of the colour.
+      const w = Math.max(overlap ? MIN_OVERLAP : MIN_BAND, x2 - x1);
+      // Clamp so a widened band can't spill off either end of the track.
+      const left = Math.min(Math.max(origin, x1), limit - w);
+      const cls = overlap ? "band overlap" : "band";
+      const title = overlap ? ` title="${seg.depth} clips overlap here"` : "";
+      return `<div class="${cls}" style="left:${left.toFixed(1)}px;width:${w.toFixed(1)}px"${title}></div>`;
+    })
+    .join("");
+}
+
+/* ---------- pending marks ---------- */
+
+function setIn(t = video.currentTime) {
+  pendingIn = t;
+  savePending();
+  renderPending();
+}
+
+function setOut(t = video.currentTime) {
+  pendingOut = t;
+  savePending();
+  renderPending();
+}
+
+function clearPending() {
+  pendingIn = pendingOut = null;
+  label.value = "";
+  savePending();
+  renderPending();
+}
+
+function pendingValid() {
+  return pendingIn !== null && pendingOut !== null && pendingOut > pendingIn;
+}
+
+function renderPending() {
+  const inSet = pendingIn !== null;
+  const outSet = pendingOut !== null;
+
+  $("inVal").textContent = inSet ? fmt(pendingIn) : "—";
+  $("outVal").textContent = outSet ? fmt(pendingOut) : "—";
+  $("inVal").classList.toggle("filled", inSet);
+  $("outVal").classList.toggle("filled", outSet);
+  $("inMark").classList.toggle("set", inSet);
+  $("outMark").classList.toggle("set", outSet);
+
+  const valid = pendingValid();
+  $("pendingDur").textContent = valid ? fmtDur(pendingOut - pendingIn)
+    : (inSet && outSet ? "out ≤ in" : "—");
+  $("saveBtn").disabled = !valid || saving;
+  $("reviewBtn").disabled = !inSet;
+
+  paintSpan();
+}
+
+// Pending marks survive an accidental tab close — finding a boundary takes real
+// time and shouldn't be lost.
+function savePending() {
+  try {
+    if (pendingIn === null && pendingOut === null && !label.value) {
+      localStorage.removeItem(PENDING_KEY);
+    } else {
+      localStorage.setItem(PENDING_KEY, JSON.stringify({
+        in: pendingIn, out: pendingOut, label: label.value,
+      }));
+    }
+  } catch (_) { /* private browsing, quota — not worth surfacing */ }
+}
+
+function restorePending() {
+  let saved;
+  try {
+    saved = JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
+  } catch (_) { return; }
+  if (!saved) return;
+  pendingIn = typeof saved.in === "number" ? saved.in : null;
+  pendingOut = typeof saved.out === "number" ? saved.out : null;
+  if (saved.label) label.value = saved.label;
+  renderPending();
+}
+
+/* ---------- server ---------- */
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); } catch (_) { /* fall through to raw text */ }
+  }
+  if (!res.ok) {
+    throw new Error((data && data.error) || text || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+async function loadClips() {
+  try {
+    clips = await api("GET", "/clips");
+    renderList();
+    renderCoverage();
+  } catch (err) {
+    status(`load failed: ${err.message}`, true);
+  }
+}
+
+async function saveClip() {
+  if (!pendingValid() || saving) return;
+  saving = true;
+  $("saveBtn").disabled = true;
+
+  const payload = { start: pendingIn, end: pendingOut, label: label.value.trim() };
+  try {
+    const res = await api("POST", "/clips", payload);
+    clips = res.clips;
+    // Only clear once the server confirms the write landed.
+    clearPending();
+    renderList();
+    renderCoverage();
+    // The CSV exists as of this write; light up its footer link if it was inert.
+    if (meta && !meta.csvExists) {
+      meta.csvExists = true;
+      renderFooter();
+    }
+    status(`saved to CSV · ${clips.length}`);
+  } catch (err) {
+    // Keep the pending clip on screen — the boundary is the expensive part.
+    status(`SAVE FAILED: ${err.message}`, true);
+  } finally {
+    saving = false;
+    renderPending();
+  }
+}
+
+async function deleteClip(index) {
+  const c = clips[index];
+  const desc = c.label ? `"${c.label}"` : `${fmt(c.start, false)}–${fmt(c.end, false)}`;
+  if (!confirm(`Delete clip ${index + 1} (${desc})?`)) return;
+  try {
+    const res = await api("DELETE", `/clips/${index}`);
+    clips = res.clips;
+    cancelPreview();
+    renderList();
+    renderCoverage();
+    status("deleted");
+  } catch (err) {
+    status(`delete failed: ${err.message}`, true);
+  }
+}
+
+async function editLabel(index) {
+  const next = prompt("Label:", clips[index].label || "");
+  if (next === null) return;
+  try {
+    const res = await api("PATCH", `/clips/${index}`, { label: next });
+    clips = res.clips;
+    renderList();
+    status("updated");
+  } catch (err) {
+    status(`update failed: ${err.message}`, true);
+  }
+}
+
+/* ---------- clip list ---------- */
+
+function playClip(index) {
+  const c = clips[index];
+  playingIndex = index;
+  video.currentTime = c.start;
+  playUntil = c.end;
+  video.play().catch(() => {});
+  renderList();
+}
+
+function renderList() {
+  const box = $("list");
+  $("count").textContent = String(clips.length);
+  $("empty").style.display = clips.length ? "none" : "block";
+
+  // Newest first — the clip you just made is the one you might want to fix.
+  box.innerHTML = clips
+    .map((c, i) => c && { c, i })
+    .filter(Boolean)
+    .reverse()
+    .map(({ c, i }) => `
+      <div class="clip${i === playingIndex ? " playing" : ""}" data-i="${i}">
+        <span class="idx">${i + 1}</span>
+        <span class="times">${fmt(c.start, false)} → ${fmt(c.end, false)}
+          <span class="dur">${c.duration.toFixed(2)}s</span></span>
+        <span class="acts">
+          <button data-act="play" title="Play this clip">▶</button>
+          <button data-act="edit" title="Edit label">✎</button>
+          <button data-act="del" class="del" title="Delete">✕</button>
+        </span>
+        <span class="lab">${escapeHTML(c.label || "")}</span>
+      </div>`)
+    .join("");
+}
+
+function escapeHTML(s) {
+  return s.replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
+}
+
+$("list").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const index = Number(btn.closest(".clip").dataset.i);
+  const act = btn.dataset.act;
+  if (act === "play") playClip(index);
+  else if (act === "edit") editLabel(index);
+  else if (act === "del") deleteClip(index);
+});
+
+/* ---------- video events ---------- */
+
+video.addEventListener("loadedmetadata", () => {
+  scrub.max = String(video.duration);
+  $("duration").textContent = `/ ${fmt(video.duration, false)}`;
+  renderCoverage();
+  paint();
+});
+
+video.addEventListener("timeupdate", paint);
+
+// The preview bound is checked per animation frame rather than on timeupdate,
+// which browsers fire only every ~250ms — enough to overshoot the out point by
+// a quarter second at 1x, half a second at 2x. On a tool built around 0.1s
+// precision, "stops at the end" should mean it.
+function watchPreview() {
+  if (playUntil !== null && !video.paused && video.currentTime >= playUntil) {
+    video.pause();
+    video.currentTime = playUntil;   // land exactly on the out point
+    cancelPreview();
+    paint();
+  }
+  requestAnimationFrame(watchPreview);
+}
+requestAnimationFrame(watchPreview);
+
+video.addEventListener("seeked", paint);
+video.addEventListener("play", () => { $("playBtn").innerHTML = 'Pause <kbd>space</kbd>'; });
+video.addEventListener("pause", () => { $("playBtn").innerHTML = 'Play <kbd>space</kbd>'; });
+
+// The server can't observe a codec failure, so report it and let the terminal
+// print the ffmpeg proxy command.
+video.addEventListener("error", () => {
+  const err = video.error;
+  const codes = { 1: "aborted", 2: "network error", 3: "decode error", 4: "format not supported" };
+  const msg = (err && (codes[err.code] || `media error ${err.code}`)) || "unknown";
+  const banner = $("banner");
+  banner.style.display = "block";
+  banner.innerHTML = `<b>Can't play this video</b> (${escapeHTML(msg)}). ` +
+    `Make a browser-friendly proxy — see the terminal for the exact command:` +
+    `<code>ffmpeg -i INPUT -c:v libx264 -crf 23 -preset veryfast -c:a aac proxy.mp4</code>`;
+  api("POST", "/playback-error", { message: msg, code: err ? err.code : 0 }).catch(() => {});
+});
+
+scrub.addEventListener("input", () => {
+  cancelPreview();
+  video.currentTime = Number(scrub.value);
+  $("time").textContent = fmt(video.currentTime);
+});
+
+window.addEventListener("resize", () => { renderCoverage(); paintSpan(); });
+
+/* ---------- buttons ---------- */
+
+document.querySelectorAll("button.nudge").forEach((b) => {
+  b.addEventListener("click", () => nudge(Number(b.dataset.nudge)));
+});
+document.querySelectorAll("button.rate").forEach((b) => {
+  b.addEventListener("click", () => setRate(Number(b.dataset.rate)));
+});
+
+$("playBtn").addEventListener("click", togglePlay);
+$("setIn").addEventListener("click", () => setIn());
+$("setOut").addEventListener("click", () => setOut());
+$("saveBtn").addEventListener("click", saveClip);
+$("clearBtn").addEventListener("click", clearPending);
+$("reviewBtn").addEventListener("click", reviewPending);
+label.addEventListener("input", savePending);
+
+/* ---------- keyboard ---------- */
+
+const NUDGES = {
+  ArrowLeft: -1, ArrowRight: 1,
+  ",": -1, ".": 1,
+  j: -5, l: 5,
+};
+
+// Shift makes the arrows finer rather than coarser: 1s → 0.1s. An absolute step
+// rather than a multiplier, since the two sizes aren't a fixed ratio apart.
+const ARROW_FINE = 0.1;
+
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  const inField = e.target === label;
+
+  // Enter saves from anywhere, including mid-label — type a label, hit Enter.
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (inField) label.blur();   // hand focus back before the async save
+    video.focus();
+    saveClip();
+    return;
+  }
+
+  // Tab always lands on the label field rather than cycling browser focus.
+  if (e.key === "Tab" && !e.shiftKey && !inField) {
+    e.preventDefault();
+    label.focus();
+    label.select();
+    return;
+  }
+
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (inField) { label.blur(); video.focus(); } else clearPending();
+    return;
+  }
+
+  // While typing a label, every remaining binding must stay inert — otherwise
+  // you can't type a label containing i, o, j, l, "," or ".".
+  if (inField) return;
+
+  if (e.key === " ") { e.preventDefault(); togglePlay(); return; }
+
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    e.preventDefault();
+    const base = NUDGES[e.key];
+    // Shift → 0.1s, the fine step. Math.sign keeps the direction.
+    nudge(e.shiftKey ? Math.sign(base) * ARROW_FINE : base);
+    return;
+  }
+
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+  if (key in NUDGES) { e.preventDefault(); nudge(NUDGES[key]); return; }
+
+  if (key === "i") { e.preventDefault(); setIn(); return; }
+  if (key === "o") { e.preventDefault(); setOut(); return; }
+  if (key === "c") { e.preventDefault(); toggleCaptions(); return; }
+  if (key === "z") { e.preventDefault(); reviewPending(); return; }
+});
+
+// Keep the arrow keys away from the range input's own handling; we manage
+// seeking ourselves so the step size stays consistent.
+scrub.addEventListener("keydown", (e) => {
+  if (e.key.startsWith("Arrow")) e.preventDefault();
+});
+
+/* ---------- captions ---------- */
+
+const CC_KEY = "clipper:captions";
+let ccTrack = null;
+
+// Off by default: captions sit over the picture, and the picture is what you're
+// reading when hunting for a boundary. The choice is remembered per browser.
+function ccWanted() {
+  try { return localStorage.getItem(CC_KEY) === "on"; } catch (_) { return false; }
+}
+
+function setupCaptions(name) {
+  if (!name) return;   // no sidecar file; button stays hidden
+  const track = document.createElement("track");
+  track.kind = "subtitles";
+  track.label = name;
+  track.srclang = "en";
+  track.src = "/captions";
+  track.addEventListener("error", () => status("caption file failed to load", true));
+  video.appendChild(track);
+  ccTrack = track;
+
+  $("ccBtn").hidden = false;
+  $("ccSep").hidden = false;
+  $("ccBtn").title = name;
+  // The TextTrack only exists once the element is attached.
+  applyCaptions(ccWanted());
+}
+
+function applyCaptions(on) {
+  if (ccTrack && ccTrack.track) ccTrack.track.mode = on ? "showing" : "hidden";
+  $("ccBtn").classList.toggle("on", on);
+  try { localStorage.setItem(CC_KEY, on ? "on" : "off"); } catch (_) { /* ignore */ }
+}
+
+function toggleCaptions() {
+  if (!ccTrack) return;
+  applyCaptions(!(ccTrack.track && ccTrack.track.mode === "showing"));
+}
+
+$("ccBtn").addEventListener("click", toggleCaptions);
+
+/* ---------- footer ---------- */
+
+// The filenames link to the files themselves. The anchors carry a real file://
+// href so right-click → Copy Link Address gives you a usable path — but clicking
+// it can't work: browsers silently block file:// navigation from an http:// page.
+// So a click is intercepted and handed to the server, which opens the file in
+// whatever app owns it.
+let meta = null;
+
+function renderFooter() {
+  if (!meta) return;
+  const link = (name, href, what, ok = true) =>
+    `<a href="${escapeHTML(href)}" data-open="${what}"${ok ? "" : ' class="missing"'}
+        title="${ok ? `Open ${escapeHTML(name)}` : "Not created until the first clip is saved"}"
+        >${escapeHTML(name)}</a>`;
+  $("footer").innerHTML =
+    `${link(meta.video, meta.videoUrl, "video")}  →  ` +
+    `${link(meta.csv, meta.csvUrl, "csv", meta.csvExists)}`;
+}
+
+$("footer").addEventListener("click", async (e) => {
+  const a = e.target.closest("a[data-open]");
+  if (!a) return;
+  if (a.classList.contains("missing")) { e.preventDefault(); return; }
+  // Let modified clicks (⌘-click, middle-click) fall through to the browser.
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+  e.preventDefault();
+  try {
+    const res = await api("POST", "/reveal", { what: a.dataset.open });
+    status(`opened ${res.opened}`);
+  } catch (err) {
+    status(`could not open: ${err.message}`, true);
+  }
+});
+
+/* ---------- boot ---------- */
+
+(async function init() {
+  try {
+    meta = await api("GET", "/meta");
+    renderFooter();
+    setupCaptions(meta.captions);
+    document.title = `clipper — ${meta.video}`;
+  } catch (_) { /* cosmetic only */ }
+  restorePending();
+  await loadClips();
+  video.focus();
+})();
+</script>
+</body>
+</html>
