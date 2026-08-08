@@ -11,6 +11,8 @@ No dependencies, no build step. Just Python 3 and the two files in this repo.
 _Please note that 99% of this was created by Claude._ It’s in my repo, but it feels weird
 to call this something "I" "made."
 
+![Screenshot of the UI](screenshot.jpg)
+
 ## Usage
 
 ```
@@ -96,4 +98,4 @@ clipper.html   # the entire UI, inline
 
 ## License
 
-MIT. See LICENSE.
+MIT. See [LICENSE](LICENSE).
