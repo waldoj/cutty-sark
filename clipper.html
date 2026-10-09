@@ -235,6 +235,8 @@
   button.wide { padding: 6px 14px; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #05121d; font-weight: 600; }
   button.primary:hover:not(:disabled) { background: #6fb6ea; }
+  /* The default dim key cap vanishes against the accent fill. */
+  button.primary kbd { color: #05121d; border-color: rgba(5, 18, 29, .4); }
   button.on { border-color: var(--accent); color: var(--accent); }
 
   .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
@@ -252,14 +254,20 @@
 
   /* ---- mark row ---- */
 
-  #markRow {
+  #markPanel {
     display: flex;
-    align-items: stretch;
+    flex-direction: column;
     gap: 8px;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 8px;
     padding: 10px;
+  }
+
+  #markRow, #capRow {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
   }
 
   .mark {
@@ -278,8 +286,9 @@
   .mark .val.inVal.filled { color: var(--in); }
   .mark .val.outVal.filled { color: var(--out); }
 
-  #label {
-    flex: 1;
+  #label { flex: 1; }
+
+  #label, #capText, .clip-edit input, .clip-edit textarea {
     min-width: 0;
     font: inherit;
     color: var(--text);
@@ -288,8 +297,19 @@
     border-radius: 6px;
     padding: 8px 10px;
   }
-  #label:focus { outline: none; border-color: var(--accent); }
-  #label::placeholder { color: #5b6472; }
+  #label:focus, #capText:focus, .clip-edit input:focus, .clip-edit textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  #label::placeholder, #capText::placeholder,
+  .clip-edit input::placeholder, .clip-edit textarea::placeholder { color: #5b6472; }
+
+  #capText, .clip-edit textarea { resize: vertical; line-height: 1.4; }
+  #capText { flex: 1; min-height: 52px; }
+
+  /* Same width as #saveCol above it, so the two rows' right edges line up. */
+  #capSide { display: flex; flex-direction: column; gap: 4px; min-width: 132px; }
+  #capState { font-family: var(--mono); font-size: 11px; color: var(--dim); }
 
   #saveCol { min-width: 132px; }
   #saveCol button { display: flex; align-items: center; justify-content: center; gap: 2px; }
@@ -349,6 +369,31 @@
     overflow-wrap: anywhere;
   }
   .clip .lab:empty { display: none; }
+  /* Captions can run long; three lines is enough to recognise a clip by, and
+     the full text is in the tooltip and the editor. */
+  .clip .cap {
+    grid-column: 2 / 4;
+    font-size: 11px;
+    font-style: italic;
+    color: #6f7888;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .clip .cap:empty { display: none; }
+  .clip.editing { background: var(--panel-2); }
+  .clip-edit {
+    grid-column: 1 / 4;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .clip-edit input, .clip-edit textarea { width: 100%; font-size: 12px; padding: 6px 8px; }
+  .clip-edit .row button { font-size: 12px; }
   .clip .acts { display: flex; gap: 3px; }
   .clip button {
     padding: 3px 6px;
@@ -356,6 +401,7 @@
     background: transparent;
   }
   .clip button.del:hover { color: var(--danger); border-color: var(--danger); }
+  .clip button.primary { background: var(--accent); }
   .clip.playing { background: #1b2530; box-shadow: inset 2px 0 0 var(--accent); }
 
   #empty { padding: 24px 14px; color: var(--dim); font-size: 12px; text-align: center; }
@@ -464,24 +510,35 @@
       <button id="ccBtn" hidden>CC <kbd>C</kbd></button>
     </div>
 
-    <div id="markRow">
-      <div class="mark" id="inMark">
-        <button id="setIn">Set In <kbd>I</kbd></button>
-        <span class="val inVal" id="inVal">—</span>
+    <div id="markPanel">
+      <div id="markRow">
+        <div class="mark" id="inMark">
+          <button id="setIn">Set In <kbd>I</kbd></button>
+          <span class="val inVal" id="inVal">—</span>
+        </div>
+        <div class="mark" id="outMark">
+          <button id="setOut">Set Out <kbd>O</kbd></button>
+          <span class="val outVal" id="outVal">—</span>
+        </div>
+        <div class="mark" style="min-width:96px">
+          <button id="reviewBtn" disabled>Review <kbd>Z</kbd></button>
+          <span class="val" id="pendingDur">—</span>
+        </div>
+        <input id="label" type="text" placeholder="Label (optional)" aria-label="Clip label"
+               autocomplete="off" spellcheck="false">
+        <div class="mark" id="saveCol">
+          <button id="saveBtn" class="primary" disabled>Save Clip <kbd>enter</kbd></button>
+          <button id="clearBtn">Clear <kbd>esc</kbd></button>
+        </div>
       </div>
-      <div class="mark" id="outMark">
-        <button id="setOut">Set Out <kbd>O</kbd></button>
-        <span class="val outVal" id="outVal">—</span>
-      </div>
-      <div class="mark" style="min-width:96px">
-        <button id="reviewBtn" disabled>Review <kbd>Z</kbd></button>
-        <span class="val" id="pendingDur">—</span>
-      </div>
-      <input id="label" type="text" placeholder="Label (optional)" aria-label="Clip label"
-             autocomplete="off" spellcheck="false">
-      <div class="mark" id="saveCol">
-        <button id="saveBtn" class="primary" disabled>Save Clip <kbd>⏎</kbd></button>
-        <button id="clearBtn">Clear <kbd>esc</kbd></button>
+      <div id="capRow">
+        <textarea id="capText" rows="2" placeholder="Captions (optional)"
+                  aria-label="Clip captions"></textarea>
+        <div id="capSide">
+          <button id="capReset" hidden disabled
+                  title="Discard your edits and use the text from the caption file">↻ From captions</button>
+          <span id="capState"></span>
+        </div>
       </div>
     </div>
   </div>
@@ -505,10 +562,11 @@
       <tr><td>, .</td><td>Nudge 1s</td></tr>
       <tr><td>J L</td><td>Nudge 5s</td></tr>
       <tr><td>I / O</td><td>Set in / out point</td></tr>
-      <tr><td>Z</td><td>Seek to pending in point</td></tr>
+      <tr><td>Z</td><td>Review pending clip</td></tr>
       <tr><td>C</td><td>Toggle captions</td></tr>
       <tr><td>Enter</td><td>Save clip</td></tr>
-      <tr><td>Tab</td><td>Focus label field</td></tr>
+      <tr><td>⇧ Enter</td><td>New line in captions</td></tr>
+      <tr><td>Tab</td><td>Label field, then captions</td></tr>
       <tr><td>Esc</td><td>Clear pending marks</td></tr>
     </table>
   </details>
@@ -522,6 +580,7 @@ const $ = (id) => document.getElementById(id);
 const video = $("video");
 const scrub = $("scrub");
 const label = $("label");
+const capText = $("capText");
 
 const PENDING_KEY = "clipper:pending";
 
@@ -531,6 +590,18 @@ let pendingOut = null;
 let saving = false;        // guards against double-save from a held Enter
 let playUntil = null;      // set while previewing a single clip
 let playingIndex = null;
+
+// The captions box is "auto" until the user types in it: auto text follows the
+// in/out points, edited text is left alone. Saving sends null for auto text so
+// the server extracts it itself — it may be saved before the preview arrives.
+let capEdited = false;
+let capSeq = 0;            // discards caption previews that arrive out of order
+
+let editingIndex = null;   // saved clip whose inline editor is open
+let editDraft = null;      // its {label, captions}, so a re-render can't lose typing
+
+let meta = null;
+const hasCaptionFile = () => Boolean(meta && meta.captions);
 
 /* ---------- formatting ---------- */
 
@@ -598,7 +669,7 @@ function cancelPreview() {
   playUntil = null;
   if (playingIndex !== null) {
     playingIndex = null;
-    renderList();
+    markPlaying();
   }
 }
 
@@ -709,19 +780,59 @@ function setIn(t = video.currentTime) {
   pendingIn = t;
   savePending();
   renderPending();
+  refreshCaptions();
 }
 
 function setOut(t = video.currentTime) {
   pendingOut = t;
   savePending();
   renderPending();
+  refreshCaptions();
 }
 
 function clearPending() {
   pendingIn = pendingOut = null;
   label.value = "";
+  capText.value = "";
+  capEdited = false;
+  capSeq++;   // a preview still in flight belongs to the clip just cleared
   savePending();
   renderPending();
+}
+
+/* ---------- pending captions ---------- */
+
+// Refill the captions box from the caption file for the current in/out span,
+// unless the user has edited it.
+async function refreshCaptions() {
+  if (capEdited) return;
+  const seq = ++capSeq;
+  if (!hasCaptionFile() || !pendingValid()) {
+    capText.value = "";
+    savePending();
+    renderCapState();
+    return;
+  }
+  try {
+    const res = await api("GET", `/caption-text?start=${pendingIn}&end=${pendingOut}`);
+    // Superseded by a later in/out change, or the user started typing meanwhile.
+    if (seq !== capSeq || capEdited) return;
+    capText.value = res.text;
+    savePending();
+  } catch (err) {
+    status(`captions: ${err.message}`, true);
+  }
+  renderCapState();
+}
+
+function renderCapState() {
+  const file = hasCaptionFile();
+  $("capReset").hidden = !file;
+  $("capReset").disabled = !capEdited;
+  $("capState").textContent = capEdited ? "edited" : (file && capText.value ? "from captions" : "");
+  capText.placeholder = file
+    ? `Captions — filled in from ${meta.captions} once in and out are set`
+    : "Captions (optional)";
 }
 
 function pendingValid() {
@@ -745,6 +856,7 @@ function renderPending() {
   $("saveBtn").disabled = !valid || saving;
   $("reviewBtn").disabled = !inSet;
 
+  renderCapState();
   paintSpan();
 }
 
@@ -752,11 +864,12 @@ function renderPending() {
 // time and shouldn't be lost.
 function savePending() {
   try {
-    if (pendingIn === null && pendingOut === null && !label.value) {
+    if (pendingIn === null && pendingOut === null && !label.value && !capText.value) {
       localStorage.removeItem(PENDING_KEY);
     } else {
       localStorage.setItem(PENDING_KEY, JSON.stringify({
         in: pendingIn, out: pendingOut, label: label.value,
+        captions: capText.value, capEdited,
       }));
     }
   } catch (_) { /* private browsing, quota — not worth surfacing */ }
@@ -771,7 +884,12 @@ function restorePending() {
   pendingIn = typeof saved.in === "number" ? saved.in : null;
   pendingOut = typeof saved.out === "number" ? saved.out : null;
   if (saved.label) label.value = saved.label;
+  capText.value = typeof saved.captions === "string" ? saved.captions : "";
+  capEdited = saved.capEdited === true;
   renderPending();
+  // Auto text is re-fetched rather than trusted: the caption file may have
+  // changed, or this may be a different video on the same port.
+  refreshCaptions();
 }
 
 /* ---------- server ---------- */
@@ -809,7 +927,12 @@ async function saveClip() {
   saving = true;
   $("saveBtn").disabled = true;
 
-  const payload = { start: pendingIn, end: pendingOut, label: label.value.trim() };
+  const payload = {
+    start: pendingIn,
+    end: pendingOut,
+    label: label.value.trim(),
+    captions: capEdited ? capText.value : null,
+  };
   try {
     const res = await api("POST", "/clips", payload);
     clips = res.clips;
@@ -839,6 +962,9 @@ async function deleteClip(index) {
   try {
     const res = await api("DELETE", `/clips/${index}`);
     clips = res.clips;
+    // Indexes after the deleted clip have shifted; an open editor would now
+    // point at the wrong clip.
+    editingIndex = editDraft = null;
     cancelPreview();
     renderList();
     renderCoverage();
@@ -848,16 +974,49 @@ async function deleteClip(index) {
   }
 }
 
-async function editLabel(index) {
-  const next = prompt("Label:", clips[index].label || "");
-  if (next === null) return;
+/* ---------- editing a saved clip ---------- */
+
+function startEdit(index) {
+  const c = clips[index];
+  editingIndex = index;
+  editDraft = { label: c.label || "", captions: c.captions || "" };
+  renderList();
+  const field = $("list").querySelector(".clip-edit .e-label");
+  if (field) { field.focus(); field.select(); }
+}
+
+function cancelEdit() {
+  editingIndex = editDraft = null;
+  renderList();
+  video.focus();
+}
+
+async function commitEdit() {
+  if (editingIndex === null) return;
   try {
-    const res = await api("PATCH", `/clips/${index}`, { label: next });
+    const res = await api("PATCH", `/clips/${editingIndex}`, editDraft);
     clips = res.clips;
+    editingIndex = editDraft = null;
     renderList();
+    video.focus();
     status("updated");
   } catch (err) {
+    // Leave the editor open with the user's text intact.
     status(`update failed: ${err.message}`, true);
+  }
+}
+
+async function reextractEdit() {
+  const index = editingIndex;
+  const c = clips[index];
+  try {
+    const res = await api("GET", `/caption-text?start=${c.start}&end=${c.end}`);
+    if (editingIndex !== index) return;
+    editDraft.captions = res.text;
+    const box = $("list").querySelector(".clip-edit .e-cap");
+    if (box) { box.value = res.text; box.focus(); }
+  } catch (err) {
+    status(`captions: ${err.message}`, true);
   }
 }
 
@@ -869,7 +1028,34 @@ function playClip(index) {
   video.currentTime = c.start;
   playUntil = c.end;
   video.play().catch(() => {});
-  renderList();
+  markPlaying();
+}
+
+// Toggle the highlight in place rather than re-rendering, which would discard
+// focus in an open clip editor every time a preview starts or ends.
+function markPlaying() {
+  document.querySelectorAll("#list .clip").forEach((el) => {
+    el.classList.toggle("playing", Number(el.dataset.i) === playingIndex);
+  });
+}
+
+function editForm() {
+  const reextract = hasCaptionFile()
+    ? `<span class="spacer"></span>
+       <button data-act="reextract" title="Replace with the text from the caption file">↻ From captions</button>`
+    : "";
+  return `
+    <div class="clip-edit">
+      <input class="e-label" type="text" placeholder="Label" aria-label="Label"
+             autocomplete="off" spellcheck="false" value="${escapeHTML(editDraft.label)}">
+      <textarea class="e-cap" rows="4" placeholder="Captions"
+                aria-label="Captions">${escapeHTML(editDraft.captions)}</textarea>
+      <div class="row">
+        <button data-act="save" class="primary">Save <kbd>enter</kbd></button>
+        <button data-act="cancel">Cancel <kbd>esc</kbd></button>
+        ${reextract}
+      </div>
+    </div>`;
 }
 
 function renderList() {
@@ -883,16 +1069,18 @@ function renderList() {
     .filter(Boolean)
     .reverse()
     .map(({ c, i }) => `
-      <div class="clip${i === playingIndex ? " playing" : ""}" data-i="${i}">
+      <div class="clip${i === playingIndex ? " playing" : ""}${i === editingIndex ? " editing" : ""}" data-i="${i}">
         <span class="idx">${i + 1}</span>
         <span class="times">${fmt(c.start, false)} → ${fmt(c.end, false)}
           <span class="dur">${c.duration.toFixed(2)}s</span></span>
         <span class="acts">
           <button data-act="play" title="Play this clip">▶</button>
-          <button data-act="edit" title="Edit label">✎</button>
+          <button data-act="edit" title="Edit label and captions">✎</button>
           <button data-act="del" class="del" title="Delete">✕</button>
         </span>
+        ${i === editingIndex ? editForm() : `
         <span class="lab">${escapeHTML(c.label || "")}</span>
+        <span class="cap" title="${escapeHTML(c.captions || "")}">${escapeHTML(c.captions || "")}</span>`}
       </div>`)
     .join("");
 }
@@ -909,8 +1097,30 @@ $("list").addEventListener("click", (e) => {
   const index = Number(btn.closest(".clip").dataset.i);
   const act = btn.dataset.act;
   if (act === "play") playClip(index);
-  else if (act === "edit") editLabel(index);
+  else if (act === "edit") startEdit(index);
   else if (act === "del") deleteClip(index);
+  else if (act === "save") commitEdit();
+  else if (act === "cancel") cancelEdit();
+  else if (act === "reextract") reextractEdit();
+});
+
+$("list").addEventListener("input", (e) => {
+  if (!editDraft) return;
+  if (e.target.classList.contains("e-label")) editDraft.label = e.target.value;
+  else if (e.target.classList.contains("e-cap")) editDraft.captions = e.target.value;
+});
+
+// The editor's own keys. The document-level handler ignores these fields, so
+// letters typed here never trigger shortcuts.
+$("list").addEventListener("keydown", (e) => {
+  if (!e.target.closest(".clip-edit")) return;
+  if (e.key === "Enter" && !(e.shiftKey && e.target.tagName === "TEXTAREA")) {
+    e.preventDefault();
+    commitEdit();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    cancelEdit();
+  }
 });
 
 /* ---------- video events ---------- */
@@ -981,6 +1191,17 @@ $("saveBtn").addEventListener("click", saveClip);
 $("clearBtn").addEventListener("click", clearPending);
 $("reviewBtn").addEventListener("click", reviewPending);
 label.addEventListener("input", savePending);
+capText.addEventListener("input", () => {
+  capEdited = true;
+  capSeq++;   // an in-flight preview must not overwrite what's being typed
+  savePending();
+  renderCapState();
+});
+$("capReset").addEventListener("click", () => {
+  capEdited = false;
+  refreshCaptions();
+  video.focus();
+});
 
 /* ---------- keyboard ---------- */
 
@@ -997,33 +1218,51 @@ const ARROW_FINE = 0.1;
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-  const inField = e.target === label;
+  // A saved clip's inline editor handles its own keys (see the #list handler).
+  if (e.target instanceof Element && e.target.closest(".clip-edit")) return;
+
+  const inField = e.target === label || e.target === capText;
 
   // Enter saves from anywhere, including mid-label — type a label, hit Enter.
+  // Shift+Enter in the captions box is the escape hatch for a real newline.
   if (e.key === "Enter") {
+    if (e.target === capText && e.shiftKey) return;
     e.preventDefault();
-    if (inField) label.blur();   // hand focus back before the async save
+    if (inField) e.target.blur();   // hand focus back before the async save
     video.focus();
     saveClip();
     return;
   }
 
-  // Tab always lands on the label field rather than cycling browser focus.
-  if (e.key === "Tab" && !e.shiftKey && !inField) {
-    e.preventDefault();
-    label.focus();
-    label.select();
-    return;
+  // Tab lands on the label field rather than cycling browser focus, and from
+  // there toggles between label and captions.
+  if (e.key === "Tab") {
+    if (e.target === label && !e.shiftKey) {
+      e.preventDefault();
+      capText.focus();
+      return;
+    }
+    if (e.target === capText) {
+      e.preventDefault();
+      label.focus();
+      return;
+    }
+    if (!e.shiftKey && !inField) {
+      e.preventDefault();
+      label.focus();
+      label.select();
+      return;
+    }
   }
 
   if (e.key === "Escape") {
     e.preventDefault();
-    if (inField) { label.blur(); video.focus(); } else clearPending();
+    if (inField) { e.target.blur(); video.focus(); } else clearPending();
     return;
   }
 
-  // While typing a label, every remaining binding must stay inert — otherwise
-  // you can't type a label containing i, o, j, l, "," or ".".
+  // While typing in a field, every remaining binding must stay inert —
+  // otherwise you can't type text containing i, o, j, l, "," or ".".
   if (inField) return;
 
   if (e.key === " ") { e.preventDefault(); togglePlay(); return; }
@@ -1101,7 +1340,6 @@ $("ccBtn").addEventListener("click", toggleCaptions);
 // it can't work: browsers silently block file:// navigation from an http:// page.
 // So a click is intercepted and handed to the server, which opens the file in
 // whatever app owns it.
-let meta = null;
 
 function renderFooter() {
   if (!meta) return;

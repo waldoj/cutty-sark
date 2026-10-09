@@ -9,6 +9,7 @@ owns the CSV on disk. Ctrl-C to stop.
 
 import argparse
 import csv
+import html
 import http.server
 import json
 import mimetypes
@@ -27,7 +28,7 @@ import webbrowser
 HERE = os.path.dirname(os.path.abspath(__file__))
 HTML_PATH = os.path.join(HERE, "clipper.html")
 
-FIELDS = ["start", "end", "duration", "label"]
+FIELDS = ["start", "end", "duration", "label", "captions"]
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
 # Size of each chunk shovelled from disk to socket. 64K keeps memory flat while
@@ -95,7 +96,76 @@ def srt_to_vtt(text):
         )
 
     body = SRT_TIME_RE.sub(fix, text.replace("\r\n", "\n").replace("\r", "\n"))
-    return "WEBVTT\n\n" + body.lstrip("﻿").lstrip()
+    return "WEBVTT\n\n" + body.lstrip("\ufeff").lstrip()
+
+
+def read_captions_vtt(path):
+    """Read a caption file as WebVTT text, converting from SRT if needed.
+
+    Raises OSError if the file can't be read.
+    """
+    # Subtitle files are routinely latin-1 or cp1252; don't die on a stray byte
+    # in a file we're only displaying.
+    with open(path, encoding="utf-8-sig", errors="replace") as fh:
+        text = fh.read()
+
+    if not path.lower().endswith(".vtt"):
+        return srt_to_vtt(text)
+    if not text.lstrip("\ufeff").startswith("WEBVTT"):
+        # A .vtt missing its required header won't parse in any browser.
+        return "WEBVTT\n\n" + text.lstrip("\ufeff").lstrip()
+    return text
+
+
+# A VTT timestamp: hours are optional, milliseconds are not.
+VTT_TIME_RE = re.compile(r"(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})")
+VTT_CUE_RE = re.compile(
+    r"^\s*" + VTT_TIME_RE.pattern + r"[ \t]{1,8}-->[ \t]{1,8}" + VTT_TIME_RE.pattern
+)
+# Inline markup: <i>, <b>, <c.yellow>, <v Speaker>, <00:01:02.000> karaoke stamps.
+VTT_TAG_RE = re.compile(r"<[^>\n]*>")
+
+
+def parse_vtt_cues(vtt):
+    """Parse WebVTT text into a list of (start, end, [lines]) in file order.
+
+    Only what caption extraction needs: timings and plain text. Markup is
+    stripped and entities decoded; NOTE/STYLE/REGION blocks have no timing line
+    and are skipped naturally.
+    """
+    def seconds(h, m, s, ms):
+        return int(h or 0) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+    cues = []
+    text = vtt.replace("\r\n", "\n").replace("\r", "\n")
+    for block in re.split(r"\n[ \t]*\n", text):
+        lines = block.split("\n")
+        for i, line in enumerate(lines):
+            match = VTT_CUE_RE.match(line)
+            if not match:
+                continue
+            g = match.groups()
+            body = [html.unescape(VTT_TAG_RE.sub("", ln)).strip() for ln in lines[i + 1 :]]
+            cues.append((seconds(*g[:4]), seconds(*g[4:]), [ln for ln in body if ln]))
+            break
+    return cues
+
+
+def captions_between(cues, start, end):
+    """The caption text spoken during [start, end), as a single line.
+
+    A cue counts if it overlaps the span at all, so a line already under way at
+    the in point is included whole. Consecutive repeated lines are dropped:
+    "rolling" captions (YouTube's auto-captions, notably) repeat each line in
+    the next cue as it scrolls up, which would otherwise double every sentence.
+    """
+    out = []
+    for cue_start, cue_end, lines in cues:
+        if cue_start < end and cue_end > start:
+            for line in lines:
+                if not out or out[-1] != line:
+                    out.append(line)
+    return " ".join(" ".join(out).split())
 
 
 def parse_range(header, size):
@@ -158,7 +228,13 @@ class ClipStore:
                 except (TypeError, ValueError):
                     continue  # header junk or a hand-edited row we can't parse
                 self.clips.append(
-                    {"start": start, "end": end, "label": (row.get("label") or "").strip()}
+                    {
+                        "start": start,
+                        "end": end,
+                        "label": (row.get("label") or "").strip(),
+                        # Absent in CSVs written before captions existed.
+                        "captions": row.get("captions") or "",
+                    }
                 )
         print(f"loaded {len(self.clips)} existing clip(s) from {self.csv_path}")
 
@@ -175,6 +251,7 @@ class ClipStore:
                         f"{clip['end']:.3f}",
                         f"{clip['end'] - clip['start']:.3f}",
                         clip["label"],
+                        clip["captions"],
                     ]
                 )
             fh.flush()
@@ -194,15 +271,16 @@ class ClipStore:
             "end": round(clip["end"], 3),
             "duration": round(clip["end"] - clip["start"], 3),
             "label": clip["label"],
+            "captions": clip["captions"],
         }
 
-    def add(self, start, end, label):
+    def add(self, start, end, label, captions=""):
         with self.lock:
-            self.clips.append({"start": start, "end": end, "label": label})
+            self.clips.append({"start": start, "end": end, "label": label, "captions": captions})
             self._write()
             return len(self.clips) - 1
 
-    def update(self, index, start=None, end=None, label=None):
+    def update(self, index, start=None, end=None, label=None, captions=None):
         with self.lock:
             clip = self.clips[index]
             new = dict(clip)
@@ -212,10 +290,16 @@ class ClipStore:
                 new["end"] = end
             if label is not None:
                 new["label"] = label
+            if captions is not None:
+                new["captions"] = captions
             if new["end"] <= new["start"]:
                 raise ValueError("end must be greater than start")
             self.clips[index] = new
             self._write()
+
+    def get(self, index):
+        with self.lock:
+            return dict(self.clips[index])
 
     def delete(self, index):
         with self.lock:
@@ -257,6 +341,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return None
         return data if isinstance(data, dict) else None
 
+    def _extract_captions(self, start, end):
+        """Caption text for a span, or "" when there's no usable caption file."""
+        path = self.server.caption_path
+        if not path:
+            return ""
+        try:
+            # Re-read every time rather than caching: the files are small, and
+            # this picks up fixes made to the caption file mid-session.
+            cues = parse_vtt_cues(read_captions_vtt(path))
+        except OSError:
+            return ""
+        return captions_between(cues, start, end)
+
+    @staticmethod
+    def _clean_captions(value):
+        """Normalise user-edited caption text: unix newlines, no outer blanks."""
+        return str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+
     def _clip_index(self):
         """Parse /clips/<index>, returning the int or None."""
         match = re.fullmatch(r"/clips/(\d+)", urllib.parse.urlparse(self.path).path)
@@ -274,6 +376,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.server.store.as_json())
         if path == "/captions":
             return self._serve_captions()
+        if path == "/caption-text":
+            return self._caption_text()
         if path == "/meta":
             video = self.server.video_path
             csv_path = self.server.store.csv_path
@@ -323,18 +427,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not path:
             return self._error(404, "no caption file found")
         try:
-            # Subtitle files are routinely latin-1 or cp1252; don't die on a
-            # stray byte in a file we're only displaying.
-            with open(path, encoding="utf-8-sig", errors="replace") as fh:
-                text = fh.read()
+            text = read_captions_vtt(path)
         except OSError as exc:
             return self._error(500, f"could not read captions: {exc}")
-
-        if not path.lower().endswith(".vtt"):
-            text = srt_to_vtt(text)
-        elif not text.lstrip("﻿").startswith("WEBVTT"):
-            # A .vtt missing its required header won't parse in any browser.
-            text = "WEBVTT\n\n" + text.lstrip("﻿").lstrip()
 
         body = text.encode("utf-8")
         self.send_response(200)
@@ -343,6 +438,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _caption_text(self):
+        """Preview the caption text for /caption-text?start=…&end=…
+
+        The page uses this to prefill the captions box as in/out points move,
+        so the user sees — and can correct — what will be saved.
+        """
+        if not self.server.caption_path:
+            return self._error(404, "no caption file found")
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            start = float(query["start"][0])
+            end = float(query["end"][0])
+        except (KeyError, IndexError, ValueError):
+            return self._error(400, "start and end must be numbers")
+        self._send_json({"text": self._extract_captions(start, end)})
 
     def _send_416(self, size):
         self.send_response(416)
@@ -452,9 +563,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not (end > start):
             return self._error(400, "end must be greater than start")
         label = str(data.get("label") or "").strip()
+        # null/absent means "not edited by hand": extract from the caption file.
+        # Done here rather than trusting the page's preview, which may not have
+        # arrived yet if the clip was saved quickly after setting the out point.
+        if data.get("captions") is None:
+            captions = self._extract_captions(start, end)
+        else:
+            captions = self._clean_captions(data["captions"])
 
         try:
-            index = self.server.store.add(start, end, label)
+            index = self.server.store.add(start, end, label, captions)
         except OSError as exc:
             return self._error(500, f"could not write CSV: {exc}")
 
@@ -480,6 +598,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             kwargs["label"] = str(data["label"] or "").strip()
 
         try:
+            if "captions" in data:
+                if data["captions"] is None:
+                    # Explicit null: re-extract for the clip's (possibly new) span.
+                    clip = self.server.store.get(index)
+                    kwargs["captions"] = self._extract_captions(
+                        kwargs.get("start", clip["start"]), kwargs.get("end", clip["end"])
+                    )
+                else:
+                    kwargs["captions"] = self._clean_captions(data["captions"])
             self.server.store.update(index, **kwargs)
         except IndexError:
             return self._error(404, f"no clip at index {index}")
